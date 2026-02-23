@@ -232,14 +232,16 @@ def generate_pdf_pages_png_only(
 # Streamlit UI (PNG only)
 # =========================
 
-st.set_page_config(page_title="Labels: Sticker Generator", layout="centered")
-st.title("Spinning Sticker Pager Generator")
+st.set_page_config(page_title="Labels: PNG Symbols (Named)", layout="centered")
+st.title("95×150mm | 9×3 গ্রিড | PNG Symbols | Named Items + Search + Multi-page")
 
 st.markdown(
     """
-### ব্যবহার নির্দেশিকা
+### ✅ PNG-only মোড
+- Text/Fonts অপশন বাদ ✅  
 - শুধু **PNG upload** করে named registry বানান  
-- পরে **name দিয়ে search করে** select করুন    
+- পরে **name দিয়ে search করে** select করুন  
+- **Preview + Pages** সাপোর্টেড  
 """
 )
 
