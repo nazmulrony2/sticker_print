@@ -1,0 +1,20 @@
+[
+  {
+    "id": "b55e7bd3-3d3b-4bd8-861c-77f4cbc1b9dd",
+    "name": "Pentagon(10 RSL,SB-80)",
+    "type": "image",
+    "value": "items\\Pentagon_10_RSL_SB-80__c66ea13b.png"
+  },
+  {
+    "id": "82e8788f-2342-4bc8-b6c7-084225bcd9bc",
+    "name": "Not Allow(14 RSL,SM-02)",
+    "type": "image",
+    "value": "items\\Not_Allow_14_RSL_SM-02__2de739bd.png"
+  },
+  {
+    "id": "5efe4464-08a9-4877-b2e4-f6a12f63ada3",
+    "name": "Pentagon(10 RSL,SB-80)",
+    "type": "text",
+    "value": "Pentagon(10 RSL,SB-80)"
+  }
+]
