@@ -232,15 +232,19 @@ def generate_pdf_pages_png_only(
 # Streamlit UI (PNG only)
 # =========================
 
-st.set_page_config(page_title="Labels: Sticker Generator", layout="centered")
+st.set_page_config(page_title="Sticker Generator", layout="centered")
 st.title("Spinning Sticker Pager Generator")
 
 st.markdown(
     """
 ### ব্যবহার নির্দেশিকা
 - শুধু **PNG upload** করে named registry বানান  
-- পরে **name দিয়ে search করে** select করুন    
-"""
+- পরে **name দিয়ে search করে** select করুন
+- PDF settings adjust করুন (margin, gap, repeat ইত্যাদি)
+- **Generate PDF** বাটনে ক্লিক করুন
+- PDF preview দেখুন এবং ডাউনলোড করুন
+- প্রিন্ট করার সময় নিশ্চিত করুন যে স্কেলিং 100% (actual size) এ আছে, যাতে alignment ঠিক থাকে।
+- সকল সিম্বল আপলোড করা হয়ে থাকলে নতুন করে আপলোড করার দরকার নেই, শুধু নাম দিয়ে সার্চ করে সিলেক্ট করে PDF বানাতে পারবেন।"""
 )
 
 ensure_dir(ITEMS_DIR)

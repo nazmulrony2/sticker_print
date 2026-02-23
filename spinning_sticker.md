@@ -254,4 +254,4 @@ Outer margin দিলে page width 90mm ছাড়িয়ে যাবে ⇒ dr
 ---
 
 আপনি যে প্রিন্টার প্রিভিউ স্ক্রিনশট দিলেন সেখানে “3.94 inch” আসছে—এই কোডের PDF দিয়ে প্রিন্ট করলে সেটা **3.54 inch** হওয়া উচিত।
-আপনি চাইলে পরেরবার **PDF print preview-এর স্ক্রিনশট** (scale + size সহ) পাঠান—আমি একদম pinpoint করে দেব কোন setting/driver এটা বাড়াচ্ছে।
+আপনি চাইলে পরেরবার **PDF print preview-এর স্ক্রিনশট** (scale + size সহ) পাঠান—আমি একদম pinpoint করে দেব কোন setting/driver এটা বাড়াচ্ছে
