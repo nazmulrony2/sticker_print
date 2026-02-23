@@ -1,4 +1,3 @@
-# app.py
 import base64
 import io
 import json
@@ -6,7 +5,7 @@ import os
 import re
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional, TypedDict
 
 import streamlit as st
 from reportlab.pdfgen import canvas
@@ -15,7 +14,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 
-# -------------------- Fixed specs --------------------
+# =========================
+# Fixed page + grid
+# =========================
 
 @dataclass(frozen=True)
 class PageSpec:
@@ -33,42 +34,148 @@ class GridSpec:
     row_h_mm: float = 50.0
 
 
-# -------------------- Font management --------------------
+# =========================
+# Persistence files
+# =========================
 
 FONTS_DIR = "fonts"
-BENGALI_TTF_PATH = os.path.join(FONTS_DIR, "Siyam Rupali Regular.ttf")
-SYMBOLS_TTF_PATH = os.path.join(FONTS_DIR, "Siyam Rupali Regular.ttf")
+LIB_FILE = "library.json"         # letter/symbol save
+FONTS_FILE = "fonts_registry.json"  # font registry save (user-added fonts)
 
-BENGALI_TTF_URL = "https://github.com/potasiyam/Siyam-Rupali/raw/master/Siyamrupali_1_070ship.ttf"
-SYMBOLS_TTF_URL = "https://github.com/potasiyam/Siyam-Rupali/raw/master/Siyamrupali_1_070ship.ttf"
 
+# =========================
+# Default font registry (built-in)
+# =========================
+# কেন: streamlit cloud-এ download fail হতে পারে, তাই local path first।
+# online_url থাকলে toggle ON করে ডাউনলোড fallback হবে।
+#
+# Siyam Rupali এর raw file path GitHub repo-তে আছে (Siyamrupali_1_070ship.ttf) :contentReference[oaicite:4]{index=4}
+
+class FontItem(TypedDict):
+    id: str
+    label: str
+    kind: str  # "bengali" | "symbol"
+    local_path: str
+    online_url: str
+
+
+DEFAULT_FONTS: List[FontItem] = [
+    {
+        "id": "siyam_rupali",
+        "label": "Siyam Rupali (Bengali) ✅ recommended",
+        "kind": "bengali",
+        "local_path": os.path.join(FONTS_DIR, "Siyamrupali_1_070ship.ttf"),
+        "online_url": "https://github.com/potasiyam/Siyam-Rupali/raw/master/Siyamrupali_1_070ship.ttf",
+    },
+    {
+        "id": "noto_sans_bengali",
+        "label": "Noto Sans Bengali (Bengali)",
+        "kind": "bengali",
+        "local_path": os.path.join(FONTS_DIR, "NotoSansBengali-Regular.ttf"),
+        "online_url": "https://github.com/google/fonts/raw/main/ofl/notosansbengali/NotoSansBengali-Regular.ttf",
+    },
+    {
+        "id": "noto_symbols2",
+        "label": "Noto Sans Symbols 2 (Symbols)",
+        "kind": "symbol",
+        "local_path": os.path.join(FONTS_DIR, "NotoSansSymbols2-Regular.ttf"),
+        "online_url": "https://github.com/google/fonts/raw/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf",
+    },
+    {
+        "id": "dejavu_sans",
+        "label": "DejaVu Sans (Fallback symbols/latin)",
+        "kind": "symbol",
+        "local_path": "",   # system font, no ttf needed
+        "online_url": "",
+    },
+]
+
+
+# =========================
+# Helpers: storage
+# =========================
 
 def ensure_dir(path: str) -> None:
-    """কেন: fonts/ ফোল্ডার নিশ্চিত না হলে ডাউনলোড/লোড ব্যর্থ হতে পারে"""
+    """কেন: fonts/ ফোল্ডার না থাকলে save/download ব্যর্থ হবে"""
     os.makedirs(path, exist_ok=True)
 
 
-def download_file(url: str, dest_path: str) -> bool:
-    """কেন: ফ্রি Bengali/Symbols ফন্ট না থাকলে অটো ডাউনলোড করে black-box সমস্যা কমানো"""
+def load_json_file(path: str, default):
+    """কেন: corrupt json হলে fallback default"""
+    if not os.path.exists(path):
+        return default
     try:
-        ensure_dir(os.path.dirname(dest_path))
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def save_json_file(path: str, data) -> None:
+    """কেন: persist state (letters/symbols/fonts) রাখতে"""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_library() -> List[str]:
+    """কেন: user-এর letters/symbols dropdown এ দেখাতে"""
+    data = load_json_file(LIB_FILE, [])
+    if isinstance(data, list):
+        return [str(x).strip() for x in data if str(x).strip()]
+    return []
+
+
+def save_library(items: List[str]) -> None:
+    """কেন: letters/symbols persist রাখতে"""
+    save_json_file(LIB_FILE, items)
+
+
+def load_fonts_registry() -> List[FontItem]:
+    """কেন: user-add করা fonts মনে রাখতে"""
+    data = load_json_file(FONTS_FILE, [])
+    if isinstance(data, list):
+        # very light validation
+        out: List[FontItem] = []
+        for x in data:
+            if isinstance(x, dict) and "id" in x and "label" in x and "kind" in x:
+                out.append(x)  # type: ignore
+        return out
+    return []
+
+
+def save_fonts_registry(items: List[FontItem]) -> None:
+    """কেন: user-add fonts persist রাখতে"""
+    save_json_file(FONTS_FILE, items)
+
+
+def merge_fonts(defaults: List[FontItem], user_fonts: List[FontItem]) -> List[FontItem]:
+    """কেন: default + user fonts একসাথে UI তে দেখাতে (id conflict হলে user override)"""
+    by_id: Dict[str, FontItem] = {f["id"]: f for f in defaults}
+    for f in user_fonts:
+        by_id[f["id"]] = f
+    return list(by_id.values())
+
+
+# =========================
+# Font download + register
+# =========================
+
+def download_file(url: str, dest_path: str) -> bool:
+    """কেন: Cloud এ local font missing হলে online থেকে এনে black-box ঠিক করতে"""
+    try:
+        ensure_dir(os.path.dirname(dest_path) or ".")
         urllib.request.urlretrieve(url, dest_path)
         return True
     except Exception:
         return False
 
 
-def ensure_font_file(ttf_path: str, url: str) -> bool:
-    """কেন: ফন্ট লোকালে না থাকলে ডাউনলোড চেষ্টা"""
-    if os.path.exists(ttf_path):
-        return True
-    return download_file(url, ttf_path)
-
-
-def register_ttf_font(alias: str, ttf_path: str) -> bool:
-    """কেন: ReportLab-এ TTF register না করলে Unicode glyph render হবে না"""
-    if not os.path.exists(ttf_path):
-        return False
+@st.cache_resource
+def register_font_alias(alias: str, ttf_path: str) -> bool:
+    """
+    কেন: ReportLab-এ TTF register না করলে Unicode glyph আসবে না
+    cache_resource দিলে re-run এ বারবার register করবে না
+    """
     try:
         pdfmetrics.registerFont(TTFont(alias, ttf_path))
         return True
@@ -77,13 +184,8 @@ def register_ttf_font(alias: str, ttf_path: str) -> bool:
 
 
 def contains_bengali(text: str) -> bool:
-    """কেন: বাংলা detect করে Bengali font ব্যবহার করবো"""
+    """কেন: auto mode-এ বাংলা detect করে Bengali font বাছাই"""
     return bool(re.search(r"[\u0980-\u09FF]", text))
-
-
-def choose_font_alias(text: str) -> str:
-    """কেন: বাংলা হলে Bengali font, অন্যথায় Symbols font"""
-    return "BENGALI" if contains_bengali(text) else "SYMBOLS"
 
 
 def compute_font_size(base_size: int, text: str, symbol_scale: float) -> int:
@@ -93,50 +195,8 @@ def compute_font_size(base_size: int, text: str, symbol_scale: float) -> int:
     return base_size
 
 
-# -------------------- Persistent library --------------------
-
-LIB_FILE = "library.json"
-
-
-def load_library() -> List[str]:
-    """কেন: আগের saved letter/symbol UI তে দেখানোর জন্য"""
-    if not os.path.exists(LIB_FILE):
-        return []
-    try:
-        with open(LIB_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return [str(x).strip() for x in data if str(x).strip()]
-        return []
-    except Exception:
-        return []
-
-
-def save_library(items: List[str]) -> None:
-    """কেন: লেটার/সিম্বল persist করে রাখা"""
-    with open(LIB_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, ensure_ascii=False, indent=2)
-
-
-def add_to_library(items: List[str], new_item: str) -> List[str]:
-    """কেন: ডুপ্লিকেট এড়ানো"""
-    v = new_item.strip()
-    if not v:
-        return items
-    if v in items:
-        return items
-    return items + [v]
-
-
-def remove_from_library(items: List[str], item: str) -> List[str]:
-    """কেন: ইউজার যেটা ডিলিট করবে সেটা বাদ"""
-    return [x for x in items if x != item]
-
-
-# -------------------- PDF preview --------------------
-
 def render_pdf_preview(pdf_bytes: bytes, height_px: int) -> None:
-    """কেন: PDF embed preview দিয়ে ডাউনলোডের আগে যাচাই করা যায়"""
+    """কেন: PDF embed preview দিয়ে ডাউনলোডের আগে যাচাই"""
     b64 = base64.b64encode(pdf_bytes).decode("utf-8")
     html = f"""
     <iframe
@@ -150,7 +210,9 @@ def render_pdf_preview(pdf_bytes: bytes, height_px: int) -> None:
     st.markdown(html, unsafe_allow_html=True)
 
 
-# -------------------- PDF generation --------------------
+# =========================
+# PDF generator
+# =========================
 
 def generate_pdf_pages(
     text_value: str,
@@ -166,12 +228,12 @@ def generate_pdf_pages(
     symbol_scale: float,
     draw_cell_boxes: bool,
     stroke_width_pt: float,
-    font_map: Dict[str, str],
+    chosen_font_name: str,
 ) -> bytes:
     """
-    কেন: pages অনুযায়ী multi-page PDF হবে।
-    letter-এর চারপাশে ছোট border নেই।
-    শুধু প্রতিটা cell (column/row) border থাকবে।
+    কেন: multi-page PDF হবে।
+    letter/symbol এর চারপাশে আলাদা border নেই।
+    শুধু row/column cell border থাকবে।
     """
     text_value = text_value.strip()
     if not text_value:
@@ -179,7 +241,6 @@ def generate_pdf_pages(
     if pages < 1:
         raise ValueError("Pages কমপক্ষে 1 হতে হবে।")
 
-    # Convert
     page_w = page.page_w_mm * mm
     page_h = page.page_h_mm * mm
     col_w = grid.col_w_mm * mm
@@ -190,46 +251,36 @@ def generate_pdf_pages(
     col_gap = col_gap_mm * mm
     row_gap = row_gap_mm * mm
 
-    # Grid total size (gap সহ)
     grid_total_w = (grid.cols * col_w) + ((grid.cols - 1) * col_gap)
     grid_total_h = (grid.rows * row_h) + ((grid.rows - 1) * row_gap)
 
-    # কেন: গ্রিড পেজের বাইরে গেলে প্রিন্টার scale করতে পারে
     if left_margin + grid_total_w > page_w + 0.001:
         raise ValueError("Grid width পেজের বাইরে যাচ্ছে। Left margin/Column gap কমান।")
     if top_margin + grid_total_h > page_h + 0.001:
         raise ValueError("Grid height পেজের বাইরে যাচ্ছে। Top margin/Row gap কমান।")
 
-    # Font choose
-    family = choose_font_alias(text_value)  # BENGALI / SYMBOLS
-    font_name = font_map.get(family, "Helvetica")
-
-    # Font size adjust (double-letter)
     font_size = compute_font_size(base_font_size, text_value, symbol_scale)
 
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(page_w, page_h))
     c.setTitle("95x150mm - 9x3 - multipage")
 
-    # Line width for cell borders
     c.setLineWidth(stroke_width_pt)
 
     x0 = left_margin
     y_top = page_h - top_margin
 
     for _ in range(pages):
-        c.setFont(font_name, font_size)
+        c.setFont(chosen_font_name, font_size)
 
         for r in range(grid.rows):
             for col in range(grid.cols):
                 x = x0 + col * (col_w + col_gap)
                 y = y_top - (r + 1) * row_h - r * row_gap
 
-                # ✅ শুধু cell border থাকবে (আপনার requirement)
                 if draw_cell_boxes:
                     c.rect(x, y, col_w, row_h)
 
-                # vertical repeat inside the cell
                 padding_y = max(2.0 * mm, 0.08 * row_h)
                 usable_h = max(1.0, row_h - 2 * padding_y)
 
@@ -238,7 +289,6 @@ def generate_pdf_pages(
                     ty = y + row_h - padding_y - (usable_h * frac)
                     tx = x + (col_w / 2.0)
 
-                    # baseline adjust
                     c.drawCentredString(tx, ty - (font_size * 0.35), text_value)
 
         c.showPage()
@@ -247,119 +297,206 @@ def generate_pdf_pages(
     return buf.getvalue()
 
 
-# -------------------- Streamlit UI --------------------
+# =========================
+# UI
+# =========================
 
-st.set_page_config(page_title="95×150mm Multi-page (Bangla+Symbol)", layout="centered")
-st.title("95mm × 150mm | 9×3 গ্রিড | বাংলা + সিম্বল সাপোর্ট | Multi-page PDF")
+st.set_page_config(page_title="95×150mm (Bangla+Symbols) Multi-font", layout="centered")
+st.title("95mm × 150mm | 9×3 গ্রিড | বাংলা + সিম্বল | Multi-font + Multi-page")
 
 st.markdown(
     """
-### ✅ প্রিন্ট নির্দেশনা
-- **Scale = 100% / Actual Size** দিন  
-- **Fit to page / Shrink to fit বন্ধ** রাখুন  
-- Printer driver-এ paper size **95mm × 150mm** ঠিক আছে কিনা নিশ্চিত করুন  
+### ✅ Cloud Hosting টিপ
+- সবচেয়ে reliable: `fonts/` ফোল্ডারে TTF ফাইলগুলো **repo-তে commit** করে deploy দিন।
+- Online link fallback দরকার হলে sidebar থেকে **Allow online download** ON করুন।
 """
 )
 
-# Ensure fonts folder
 ensure_dir(FONTS_DIR)
 
-# Sidebar: font status
-with st.sidebar:
-    st.header("ফন্ট সাপোর্ট (Auto)")
-    st.caption("বাংলা/সিম্বল black-box সমস্যা কমাতে ফ্রি Noto ফন্ট ব্যবহার করা হচ্ছে।")
+# Load persisted fonts + merge defaults
+user_fonts = load_fonts_registry()
+fonts_all = merge_fonts(DEFAULT_FONTS, user_fonts)
 
-    bengali_ok = ensure_font_file(BENGALI_TTF_PATH, BENGALI_TTF_URL)
-    symbols_ok = ensure_font_file(SYMBOLS_TTF_PATH, SYMBOLS_TTF_URL)
+bengali_fonts = [f for f in fonts_all if f["kind"] == "bengali"]
+symbol_fonts = [f for f in fonts_all if f["kind"] == "symbol"]
 
-    bengali_reg = register_ttf_font("BENGALI", BENGALI_TTF_PATH) if bengali_ok else False
-    symbols_reg = register_ttf_font("SYMBOLS", SYMBOLS_TTF_PATH) if symbols_ok else False
-
-    if bengali_reg:
-        st.success("✅ বাংলা ফন্ট রেডি (Noto Sans Bengali)")
-    else:
-        st.warning(f"⚠️ বাংলা ফন্ট লোড হয়নি। এই ফাইলটা রাখুন: {BENGALI_TTF_PATH}")
-
-    if symbols_reg:
-        st.success("✅ সিম্বল ফন্ট রেডি (Noto Sans Symbols2)")
-    else:
-        st.warning(f"⚠️ সিম্বল ফন্ট লোড হয়নি। এই ফাইলটা রাখুন: {SYMBOLS_TTF_PATH}")
-
-# Font map
-font_map: Dict[str, str] = {
-    "BENGALI": "BENGALI" if "BENGALI" in pdfmetrics.getRegisteredFontNames() else "Helvetica",
-    "SYMBOLS": "SYMBOLS" if "SYMBOLS" in pdfmetrics.getRegisteredFontNames() else "Helvetica",
-}
-
-# Load library
+# Remember letters/symbols
 if "library" not in st.session_state:
     st.session_state["library"] = load_library()
+
 library: List[str] = st.session_state["library"]
 
-# Library UI
-st.subheader("📚 আপনার সেভ করা Letter / Symbol লিস্ট")
-c1, c2, c3 = st.columns([2, 2, 1])
-
-with c1:
-    selected = st.selectbox(
-        "লিস্ট থেকে বাছাই করুন",
-        options=(library if library else ["(লিস্ট খালি)"]),
-        index=0,
-        disabled=(len(library) == 0),
-    )
-with c2:
-    new_item = st.text_input("নতুন Letter/Symbol যোগ করুন (বাংলা/সিম্বল)", value="")
-with c3:
-    if st.button("➕ যোগ করুন"):
-        updated = add_to_library(library, new_item)
-        st.session_state["library"] = updated
-        save_library(updated)
-        st.rerun()
-
-if len(library) > 0:
-    if st.button("🗑️ সিলেক্টেড ডিলিট করুন"):
-        updated = remove_from_library(library, selected)
-        st.session_state["library"] = updated
-        save_library(updated)
-        st.rerun()
-
-# Text input
-st.subheader("✍️ প্রিন্ট করার টেক্সট")
-st.caption("Dropdown থেকে বাছাই করুন, অথবা লিখে Generate করুন।")
-text_value = st.text_input(
-    "টেক্সট লিখুন (বাংলা/ডাবল-লেটার/সিম্বল হতে পারে)",
-    value=(selected if len(library) > 0 else ""),
-)
-
-# Controls
 with st.sidebar:
-    st.header("Pages")
-    pages = st.number_input("কয় পেজ হবে?", min_value=1, max_value=500, value=1, step=1)
+    st.header("Font download")
+    allow_online_download = st.toggle("Allow online download (Cloud fallback)", value=False)
+    st.caption("OFF থাকলে শুধু `fonts/` লোকাল ফাইল ব্যবহার হবে।")
 
-    st.header("Alignment টিউনিং")
+    st.header("Font selection")
+    bengali_choice = st.selectbox(
+        "বাংলা ফন্ট বাছাই করুন",
+        options=bengali_fonts,
+        format_func=lambda x: x["label"],
+        index=0,
+    )
+    symbol_choice = st.selectbox(
+        "সিম্বল ফন্ট বাছাই করুন",
+        options=symbol_fonts,
+        format_func=lambda x: x["label"],
+        index=0,
+    )
+
+    font_mode = st.radio(
+        "Font mode",
+        options=["Auto (বাংলা হলে Bengali, নইলে Symbols)", "Force Bengali font", "Force Symbols font"],
+        index=0,
+    )
+
+    st.divider()
+    st.header("Add new font (remembered)")
+    st.caption("আপনি চাইলে নতুন ফন্ট আপলোড বা URL দিয়ে যোগ করতে পারবেন।")
+
+    add_kind = st.selectbox("Font type", options=["bengali", "symbol"])
+    add_label = st.text_input("Font label", value="")
+    add_id = st.text_input("Font id (unique)", value="")
+    add_url = st.text_input("Online .ttf URL (optional)", value="")
+    uploaded = st.file_uploader("Upload .ttf (optional)", type=["ttf"])
+
+    if st.button("➕ Add font to registry"):
+        if not add_id.strip() or not add_label.strip():
+            st.error("Font id এবং label লাগবে।")
+        else:
+            local_path = ""
+            if uploaded is not None:
+                # কেন: আপলোড করা ফন্ট Cloud-এও কাজ করবে (কারণ file app storage এ থাকবে)
+                local_path = os.path.join(FONTS_DIR, f"{add_id.strip()}.ttf")
+                with open(local_path, "wb") as f:
+                    f.write(uploaded.getbuffer())
+
+            new_font: FontItem = {
+                "id": add_id.strip(),
+                "label": add_label.strip(),
+                "kind": add_kind,
+                "local_path": local_path,
+                "online_url": add_url.strip(),
+            }
+
+            updated_user_fonts = user_fonts + [new_font]
+            save_fonts_registry(updated_user_fonts)
+            st.success("ফন্ট যোগ হয়েছে। Reload হচ্ছে…")
+            st.rerun()
+
+    st.divider()
+    st.header("Pages & layout")
+    pages = st.number_input("Pages", min_value=1, max_value=500, value=1, step=1)
+
     left_margin_mm = st.number_input("Left Margin (mm)", min_value=0.0, max_value=30.0, value=2.5, step=0.5)
     top_margin_mm = st.number_input("Top Margin (mm)", min_value=0.0, max_value=30.0, value=0.0, step=0.5)
     col_gap_mm = st.number_input("Column Gap (mm)", min_value=0.0, max_value=10.0, value=0.0, step=0.5)
     row_gap_mm = st.number_input("Row Gap (mm)", min_value=0.0, max_value=10.0, value=0.0, step=0.5)
 
-    st.header("Text সেটিং")
-    repeat_per_cell = st.number_input("প্রতি সেলে কয়বার রিপিট হবে?", min_value=1, max_value=20, value=4, step=1)
-    base_font_size = st.slider("Base Font Size", min_value=6, max_value=80, value=18, step=1)
-    symbol_scale = st.slider("ডাবল-লেটার হলে সাইজ কতটা কমবে?", min_value=0.3, max_value=1.0, value=0.75, step=0.05)
+    repeat_per_cell = st.number_input("Repeat per cell", min_value=1, max_value=20, value=4, step=1)
+    base_font_size = st.slider("Base font size", min_value=6, max_value=80, value=18, step=1)
+    symbol_scale = st.slider("If double-letter, scale", min_value=0.3, max_value=1.0, value=0.75, step=0.05)
 
-    st.header("বর্ডার")
-    draw_cell_boxes = st.toggle("Row/Column cell border দেখান", value=True)
-    stroke_width_pt = st.slider("বর্ডার thickness (pt)", min_value=0.1, max_value=3.0, value=0.7, step=0.1)
+    draw_cell_boxes = st.toggle("Draw row/column cell border", value=True)
+    stroke_width_pt = st.slider("Border thickness (pt)", min_value=0.1, max_value=3.0, value=0.7, step=0.1)
 
     st.header("Preview")
-    show_preview = st.toggle("Preview দেখান", value=True)
+    show_preview = st.toggle("Show PDF preview", value=True)
     preview_height = st.slider("Preview height (px)", min_value=400, max_value=1100, value=700, step=50)
+
+
+# Letters/symbols library UI
+st.subheader("📚 Saved Letter / Symbol list (Remembered)")
+col1, col2, col3 = st.columns([2, 2, 1])
+
+with col1:
+    selected_item = st.selectbox(
+        "লিস্ট থেকে বাছাই করুন",
+        options=(library if library else ["(লিস্ট খালি)"]),
+        disabled=(len(library) == 0),
+    )
+
+with col2:
+    new_item = st.text_input("নতুন Letter/Symbol যোগ করুন", value="")
+
+with col3:
+    if st.button("➕ Add"):
+        v = new_item.strip()
+        if v and v not in library:
+            library = library + [v]
+            st.session_state["library"] = library
+            save_library(library)
+        st.rerun()
+
+if len(library) > 0:
+    if st.button("🗑️ Delete selected"):
+        library = [x for x in library if x != selected_item]
+        st.session_state["library"] = library
+        save_library(library)
+        st.rerun()
+
+st.subheader("✍️ Print text")
+text_value = st.text_input(
+    "টেক্সট লিখুন (বাংলা/ডাবল-লেটার/সিম্বল হতে পারে)",
+    value=(selected_item if len(library) > 0 else ""),
+)
+
+# Decide which font should be used for the current text
+def prepare_font(font_item: FontItem, alias: str) -> str:
+    """
+    কেন: local font থাকলে সেটাই; না থাকলে allow_online_download হলে download।
+    শেষে ReportLab alias register করে return।
+    """
+    if font_item["id"] == "dejavu_sans":
+        return "Helvetica"  # সহজ fallback (ReportLab built-in)
+
+    local_path = font_item.get("local_path", "").strip()
+
+    # local_path empty হলে, id based default name বানিয়ে রাখি
+    if not local_path:
+        local_path = os.path.join(FONTS_DIR, f"{font_item['id']}.ttf")
+
+    if not os.path.exists(local_path):
+        if allow_online_download and font_item.get("online_url", "").strip():
+            ok = download_file(font_item["online_url"], local_path)
+            if not ok:
+                # download fail হলে fallback
+                return "Helvetica"
+        else:
+            return "Helvetica"
+
+    # register alias -> local_path
+    if register_font_alias(alias, local_path):
+        return alias
+    return "Helvetica"
+
+
+# Font selection resolution
+bengali_font_name = prepare_font(bengali_choice, alias="BENGALI_SELECTED")
+symbol_font_name = prepare_font(symbol_choice, alias="SYMBOLS_SELECTED")
+
+# Auto detect for current text
+auto_is_bengali = contains_bengali(text_value)
+if font_mode.startswith("Auto"):
+    chosen_font_name = bengali_font_name if auto_is_bengali else symbol_font_name
+elif font_mode.startswith("Force Bengali"):
+    chosen_font_name = bengali_font_name
+else:
+    chosen_font_name = symbol_font_name
+
+# Status
+st.caption(
+    f"Selected font used now: **{chosen_font_name}** | "
+    f"Auto-detected Bengali: **{auto_is_bengali}**"
+)
 
 page = PageSpec()
 grid = GridSpec()
 
 # Generate
-if st.button("✅ PDF তৈরি করুন", type="primary"):
+if st.button("✅ Generate PDF", type="primary"):
     try:
         pdf_bytes = generate_pdf_pages(
             text_value=text_value,
@@ -375,7 +512,7 @@ if st.button("✅ PDF তৈরি করুন", type="primary"):
             symbol_scale=float(symbol_scale),
             draw_cell_boxes=bool(draw_cell_boxes),
             stroke_width_pt=float(stroke_width_pt),
-            font_map=font_map,
+            chosen_font_name=chosen_font_name,
         )
         st.session_state["pdf_bytes"] = pdf_bytes
         st.success("PDF তৈরি হয়েছে ✅")
@@ -390,7 +527,7 @@ if isinstance(pdf_data, (bytes, bytearray)) and len(pdf_data) > 0:
         render_pdf_preview(pdf_data, height_px=int(preview_height))
 
     st.download_button(
-        label="⬇️ PDF ডাউনলোড করুন",
+        label="⬇️ Download PDF",
         data=pdf_data,
         file_name=f"labels_95x150_9x3_pages{int(pages)}.pdf",
         mime="application/pdf",
